@@ -16,7 +16,7 @@ install:
 	-@chmod a+rX /usr/local/bin/bigfilemaker
 	-@/bin/ls -ld /usr/local/bin/bigfilemaker
 
-tar:
+taroldway:
 	tar -C .. --exclude='*.o' --exclude='*.tar.gz' --exclude='*.swp'  --exclude=bigfilemaker/bigfilemaker -c -v -z -f bigfilemaker.tar.gz bigfilemaker
 
 clean:

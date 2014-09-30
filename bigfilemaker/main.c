@@ -108,7 +108,7 @@ int WinStat64(const char *const path, struct WinStat64 *const stp);
 #include "rand48.h"
 #include "md5.h"
 
-#define VERSION_STR "1.3 (2014-06-29)"
+#define VERSION_STR "1.4 (2014-09-30)"
 
 
 #define MINBLOCKSIZE 4096
@@ -432,6 +432,9 @@ Usage(const char *const prg)
 	fprintf(stderr, "  -s XX  Set the output file size to XX (can be specified with units, e.g., 100MB).\n");
 	fprintf(stderr, "  -b XX  Set block size to XX (default %lu). Larger buffers generally increase performance.\n", (unsigned long) gBlockSize); 
 	fprintf(stderr, "  -M     Do not calculate MD5 sum. File generation speed will increase slightly.\n");
+	fprintf(stderr, "  -y 0   Do not sync (default).\n");
+	fprintf(stderr, "  -y 1   Do fsync after last block.\n");
+	fprintf(stderr, "  -y 2   Do fsync after each block.\n");
 	fprintf(stderr, "  -z     Write zeroed data rather than random binary data. The resulting file will be highly compressible.\n");
 	fprintf(stderr, "  -c X   Write constant stream of character X rather than random binary data. The resulting file will be highly compressible.\n");
 	fprintf(stderr, "  -r     Write one randomized block repeatedly, rather than randomizing the entire file.\n");
@@ -488,6 +491,46 @@ FileSize(const double size, const char **uStr0, double *const uMult0)
 
 
 
+static double
+FileSizeBits(const double sizeBits, const char **uStr0, double *const uMult0)
+{
+	double uMult, uTotal;
+	const char *uStr;
+
+	/* The comparisons below may look odd, but the reason
+	 * for them is that we only want a maximum of 3 digits
+	 * before the decimal point.  (I.e., we don't want to
+	 * see "1017.2 kB", instead we want "0.99 MB".
+	 */
+	if (sizeBits > (999.5 * kGigabyte)) {
+		uStr = "Tb";
+		uMult = kTerabyte;
+	} else if (sizeBits > (999.5 * kMegabyte)) {
+		uStr = "Gb";
+		uMult = kGigabyte;
+	} else if (sizeBits > (999.5 * kKilobyte)) {
+		uStr = "Mb";
+		uMult = kMegabyte;
+	} else if (sizeBits > 999.5) {
+		uStr = "kb";
+		uMult = 1024;
+	} else {
+		uStr = "b";
+		uMult = 1;
+	}
+	if (uStr0 != NULL)
+		*uStr0 = uStr;
+	if (uMult0 != NULL)
+		*uMult0 = uMult;
+	uTotal = sizeBits / ((double) uMult);
+	if (uTotal < 0.0)
+		uTotal = 0.0;
+	return (uTotal);
+}	/* FileSizeBits */
+
+
+
+
 static char *
 ElapsedStr(double elap, char *const s, const size_t siz)
 {
@@ -539,12 +582,14 @@ static void
 ProgressReport(longest_int n, int lastReport)
 {
 	double dura;
-	double tbytes;
+	double tbytes, tbits;
 	double rateInUnits, sizeInUnits;
-	double rateUnits;
+	double rateInUnitsB;
+	double rateUnits, rateUnitsB;
 	double secLeft;
 	time_t now;
 	const char *rStr, *sStr;
+	const char *rStrB, *sStrB;
 	int hr, min, sec;
 
 	gTotalBytes += n;
@@ -555,8 +600,11 @@ ProgressReport(longest_int n, int lastReport)
 		dura = Duration2(&tv0, &tv1);
 		if (dura <= 0.0)
 			return;
-		tbytes = (double) gTotalBytes;
+		tbits = tbytes = (double) gTotalBytes;
+		tbits *= 8;
 
+		(void) FileSizeBits(tbits, &sStrB, NULL);
+		rateInUnitsB = FileSizeBits(tbits / dura, &rStrB, &rateUnitsB);
 		sizeInUnits = FileSize(tbytes, &sStr, NULL);
 		rateInUnits = FileSize(tbytes / dura, &rStr, &rateUnits);
 		if (rateInUnits > 0.0) {
@@ -568,9 +616,9 @@ ProgressReport(longest_int n, int lastReport)
 			min = (sec / 60) % 60;
 			sec = sec % 60;
 			if (lastReport == 0) {
-				fprintf(stderr, "\rProcess%s    %.2f %s   %6.2f %s/s   ETA %d:%02d:%02d    ", "ing:",  sizeInUnits, sStr, rateInUnits, rStr, hr, min, sec);
+				fprintf(stderr, "\rProcess%s    %.2f %s   %6.2f %s/s   %6.2f %s/s   ETA %d:%02d:%02d    ", "ing:",  sizeInUnits, sStr, rateInUnits, rStr, rateInUnitsB, rStrB, hr, min, sec);
 			} else {
-				fprintf(stderr, "\rProcess%s    %.2f %s   %6.2f %s/s                       ", "ed: ", sizeInUnits, sStr, rateInUnits, rStr);
+				fprintf(stderr, "\rProcess%s    %.2f %s   %6.2f %s/s   %6.2f %s/s                       ", "ed: ", sizeInUnits, sStr, rateInUnits, rStr, rateInUnitsB, rStrB);
 			}
 		} else {
 			fprintf(stderr, "\rProcessing    %.2f %s%-50s", sizeInUnits, sStr, "");
@@ -719,6 +767,7 @@ int main(int argc, const char **argv)
 	int md5mode = 1;
 	int fillChar = 0;
 	int randomizeOneBlockOnly = 0;
+	int do_fsync = 0;
 
 	(void) time(&t0);
 	defaultSeed = (long) t0;
@@ -745,7 +794,7 @@ int main(int argc, const char **argv)
 	}
 
 	GetoptReset();
-	while ((c = Getopt(argc, argv, "b:B:c:d:L:Mm:o:rRs:S:z")) > 0) switch (c) {
+	while ((c = Getopt(argc, argv, "b:B:c:d:L:Mm:o:rRs:S:y:z")) > 0) switch (c) {
 		case 'b':
 		case 'B':
 			gBlockSize = (size_t) unit_atoll(gOptArg);
@@ -848,6 +897,13 @@ int main(int argc, const char **argv)
 			fillMode = 1;
 			fillChar = -1;
 			randomizeOneBlockOnly = 0;
+			break;
+		case 'y':
+			do_fsync = atoi(gOptArg);
+			if ((do_fsync < 0) || (! isdigit(gOptArg[0]))) {
+				fprintf(stderr, "Bad sync type, %s.\n", gOptArg);
+				Usage(argv[0]);
+			}
 			break;
 		default:
 			Usage(argv[0]);
@@ -1037,7 +1093,7 @@ int main(int argc, const char **argv)
 			}
 		}
 		while (--nFullBlocksToDo >= 0) {
-			if ((BlockWrite(ofp, theBlock, gBlockSize) != (write_return_t) gBlockSize) || ((isRegularFile != 0) && (fsync(ofp) < 0))) {
+			if ((BlockWrite(ofp, theBlock, gBlockSize) != (write_return_t) gBlockSize) || ((isRegularFile != 0) && (do_fsync & 002) && (fsync(ofp) < 0))) {
 				perror("write failed");
 				exit(1);
 			}
@@ -1062,7 +1118,7 @@ int main(int argc, const char **argv)
 		}
 		while (--nFullBlocksToDo >= 0) {
 			md5_process_bytes(theBlock, gBlockSize, &ctx);
-			if ((BlockWrite(ofp, theBlock, gBlockSize) != (write_return_t) gBlockSize) || ((isRegularFile != 0) && (fsync(ofp) < 0))) {
+			if ((BlockWrite(ofp, theBlock, gBlockSize) != (write_return_t) gBlockSize) || ((isRegularFile != 0) && (do_fsync & 002) && (fsync(ofp) < 0))) {
 				perror("write failed");
 				exit(1);
 			}
@@ -1086,7 +1142,7 @@ int main(int argc, const char **argv)
 				*ucp++ = randbyte();
 			}
 			if (md5mode) md5_process_bytes(theBlock, gBlockSize, &ctx);
-			if ((BlockWrite(ofp, theBlock, gBlockSize) != (write_return_t) gBlockSize) || ((isRegularFile != 0) && (fsync(ofp) < 0))) {
+			if ((BlockWrite(ofp, theBlock, gBlockSize) != (write_return_t) gBlockSize) || ((isRegularFile != 0) && (do_fsync & 002) && (fsync(ofp) < 0))) {
 				perror("write failed");
 				exit(1);
 			}
@@ -1100,12 +1156,17 @@ int main(int argc, const char **argv)
 				*ucp++ = randbyte();
 			}
 			if (md5mode) md5_process_bytes(theBlock, partialBlockSize, &ctx);
-			if ((BlockWrite(ofp, theBlock, partialBlockSize) != partialBlockSize) || ((isRegularFile != 0) && (fsync(ofp) < 0))) {
+			if ((BlockWrite(ofp, theBlock, partialBlockSize) != partialBlockSize) || ((isRegularFile != 0) && (do_fsync & 002) && (fsync(ofp) < 0))) {
 				perror("write last failed");
 				exit(1);
 			}
 			ProgressReport((longest_int) partialBlockSize, 0);
 		}
+	}
+
+	if ((do_fsync & 001) && (fsync(ofp) < 0)) {
+		perror("fsync (write) last failed");
+		exit(1);
 	}
 
 	if (ofp != 1) {
