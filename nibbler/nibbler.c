@@ -96,7 +96,7 @@ Usage(void)
 	fprintf(stderr, "  nibbler -mm /etc/services /etc/protocols\n");
 	fprintf(stderr, "  nibbler -v tcp:51234 &; echo \"hello world\" | nc localhost 51234\n");
 	fprintf(stderr, "  dd if=/dev/urandom bs=1048576 count=10 status=none | ssh -c blowfish -o Compression=no a.example.com /usr/local/bin/nibbler -p\n");
-	fprintf(stderr, "\nVersion:\n  1.2 * 2014-06-18 * Gleason\n");
+	fprintf(stderr, "\nVersion:\n  1.3 * 2014-10-01 * Gleason\n");
 	exit(2);
 }	/* Usage */
 
@@ -139,6 +139,46 @@ FileSize(const double size, const char **uStr0, double *const uMult0)
 		uTotal = 0.0;
 	return (uTotal);
 }	/* FileSize */
+
+
+
+
+static double
+FileSizeBits(const double sizeBits, const char **uStr0, double *const uMult0)
+{
+	double uMult, uTotal;
+	const char *uStr;
+
+	/* The comparisons below may look odd, but the reason
+	 * for them is that we only want a maximum of 3 digits
+	 * before the decimal point.  (I.e., we don't want to
+	 * see "1017.2 kB", instead we want "0.99 MB".
+	 */
+	if (sizeBits > (999.5 * kGigabyte)) {
+		uStr = "Tib";
+		uMult = kTerabyte;
+	} else if (sizeBits > (999.5 * kMegabyte)) {
+		uStr = "Gib";
+		uMult = kGigabyte;
+	} else if (sizeBits > (999.5 * kKilobyte)) {
+		uStr = "Mib";
+		uMult = kMegabyte;
+	} else if (sizeBits > 999.5) {
+		uStr = "kib";
+		uMult = 1024;
+	} else {
+		uStr = "b";
+		uMult = 1;
+	}
+	if (uStr0 != NULL)
+		*uStr0 = uStr;
+	if (uMult0 != NULL)
+		*uMult0 = uMult;
+	uTotal = sizeBits / ((double) uMult);
+	if (uTotal < 0.0)
+		uTotal = 0.0;
+	return (uTotal);
+}	/* FileSizeBits */
 
 
 
@@ -336,6 +376,21 @@ RateStr(char *dst, size_t dsiz, double tbytes, double dura)
 
 
 static char *
+BitRateStr(char *dst, size_t dsiz, double tbits, double dura)
+{
+	double rateInUnitsB;
+	const char *rStrB;
+
+	if (dura <= 0) dura = 0.0;
+	rateInUnitsB = FileSizeBits(tbits / dura, &rStrB, NULL);
+	snprintf(dst, dsiz, "%.2f %s/s", rateInUnitsB, rStrB);
+	return (dst);
+}	/* BitRateStr */
+
+
+
+
+static char *
 md5_get_digest_hexstr(char *digestStr, size_t dsiz, struct md5_ctx *done_ctx)
 {
 	int i;
@@ -501,7 +556,7 @@ main(int argc, const char **argv)
 	long long int tread = 0, tread1 = 0;
 	int i = 0, c = 0;
 	int force_stdin = 0;
-	char dstr[64], rstr[64];
+	char dstr[64], rstr[64], brstr[64];
 	char md5str[64];
 
 	memset(&ctx, 0, sizeof(ctx));
@@ -576,10 +631,11 @@ main(int argc, const char **argv)
 	if (tread == 0) Usage();
 
 	if (md5mode == 1) fprintf(stdout, "%s\n", md5_get_digest_hexstr(md5str, sizeof(md5str), &ctx));
-	if (verbose > 0) fprintf(stdout, "%lld bytes devoured in %s (%s).\n",
+	if (verbose > 0) fprintf(stdout, "%lld bytes devoured in %s (%s; %s).\n",
 		tread,
 		ElapsedStr(Duration2(&t0, &t1) - time_spent_waiting, dstr, sizeof(dstr)),
-		RateStr(rstr, sizeof(rstr), (double) tread, Duration2(&t0, &t1) - time_spent_waiting)
+		RateStr(rstr, sizeof(rstr), (double) tread, Duration2(&t0, &t1) - time_spent_waiting),
+		BitRateStr(brstr, sizeof(brstr), (double) tread * 8, Duration2(&t0, &t1) - time_spent_waiting)
 	);
 
 	exit(0);
